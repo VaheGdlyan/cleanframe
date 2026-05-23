@@ -1,0 +1,24 @@
+[project]
+name = "cleanframe"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Vahe Gdlyan", email = "vahe.gdlyan@mail.ru" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "narwhals>=2.21.2",
+    "pandas>=3.0.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.29,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.14",
+]

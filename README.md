@@ -1,3 +1,3 @@
 # CleanFrame 
 
-Wait for it !
+Wait for it!

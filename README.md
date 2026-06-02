@@ -1,3 +1,6 @@
-# CleanFrame 
+# CleanFrame
 
-Wait for it!
+
+![Phase 1 Architecture Map](assets/architecture.png) 
+
+Wait for it !

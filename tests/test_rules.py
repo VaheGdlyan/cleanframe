@@ -138,4 +138,38 @@ def test_outlier_handler(messy_dataframe):
 
                     handler = DuplicateHandler()                  # Detect duplicates: no subset specified, drop full duplicates
 
-                    
+
+                    from cleanframe.rules import CardinalityChecker
+                    import polars as pl
+
+                    def test_cardinality_checker():
+                        # Create a small DataFrame
+                        df = pl.DataFrame({
+                            "constant": [1, 1, 1, 1, 1],
+                            "unique_id": ["id1", "id2", "id3", "id4", "id5"],
+                            "normal": ["a", "a", "b", "b", "c"],
+                        })
+
+                        checker = CardinalityChecker()
+                        decisions = checker.detect(df, params={})
+
+                        # Assert a decision drops "constant" column
+                        drop_constant = next(
+                            (d for d in decisions if d.column == "constant" and d.action == "drop_column"),
+                            None)
+                        assert drop_constant is not None, "Missing drop_column decision for 'constant'"
+
+                        # Assert a decision flags "unique_id" column
+                        flag_unique_id = next(
+                            (d for d in decisions if d.column == "unique_id" and d.action == "flag_id"),
+                            None)
+                        assert flag_unique_id is not None, "Missing flag_id decision for 'unique_id'"
+
+                        # Test transform
+                        transformed = checker.transform(df, decisions)
+                        # For polars, columns property
+                        assert "constant" not in transformed.columns
+                        assert "unique_id" in transformed.columns
+                        assert "normal" in transformed.columns
+
+     

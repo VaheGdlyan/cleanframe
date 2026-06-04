@@ -3,6 +3,7 @@ from ..base import BaseRule
 from ..types import Decision
 import narwhals as nw
 
+
 class OutlierHandler(BaseRule):
     def detect(self, df: Any, params: dict[str, Any]) -> list[Decision]:
         ndf = nw.from_native(df)
@@ -71,7 +72,7 @@ class OutlierHandler(BaseRule):
             return "No outliers detected in any numeric columns."
         lines = [
             "Column | Detected Outliers | Clipping Bounds",
-            "-------|-------------------|----------------"
+            "-------|-------------------|----------------",
         ]
         for decision in decisions:
             col = decision.column

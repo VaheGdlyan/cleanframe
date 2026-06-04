@@ -1,6 +1,7 @@
 from typing import Any
 from .types import Decision
 
+
 class CleaningPlan:
     """
     Represents a plan comprising a set of data cleaning decisions.

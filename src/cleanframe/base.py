@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 from .types import Decision
 
+
 class BaseRule(ABC):
     """
     Abstract base class for data cleaning rules.
@@ -60,4 +61,4 @@ class BaseRule(ABC):
 
         This method must be pure and stateless.
         """
-        pass 
+        pass

@@ -4,6 +4,7 @@ from ..base import BaseRule
 from ..types import Decision
 import narwhals as nw
 
+
 class NullHandler(BaseRule):
     def detect(self, df: Any, params: dict[str, Any]) -> list[Decision]:
         ndf = nw.from_native(df)
@@ -68,10 +69,15 @@ class NullHandler(BaseRule):
         if not decisions:
             return "No missing values detected."
 
-        lines = ["Column | Missing Count | Strategy", "-------|--------------|---------"]
+        lines = [
+            "Column | Missing Count | Strategy",
+            "-------|--------------|---------",
+        ]
         for decision in decisions:
             col = decision.column
-            missing_count = int(decision.signal_strength * 100)  # signal_strength * 100 gives percentage
+            missing_count = int(
+                decision.signal_strength * 100
+            )  # signal_strength * 100 gives percentage
             strategy = decision.parameters.get("strategy", decision.action)
             line = f"{col} | {missing_count}% | {strategy}"
             lines.append(line)

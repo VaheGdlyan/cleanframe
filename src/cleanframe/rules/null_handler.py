@@ -7,7 +7,7 @@ import narwhals as nw
 class NullHandler(BaseRule):
     def detect(self, df: Any, params: dict[str, Any]) -> list[Decision]:
         ndf = nw.from_native(df)
-        cols = ndf.columns().to_list()
+        cols = list(ndf.columns)
         nrows = int(ndf.shape[0])
         if nrows == 0:
             return []
@@ -16,14 +16,12 @@ class NullHandler(BaseRule):
         cat_strategy = params.get("categorical_strategy", "mode")
         result: list[Decision] = []
 
-        dtypes = ndf.dtypes().to_list() if hasattr(ndf, "dtypes") else [None] * len(cols)
-
-        null_counts = ndf.isnull().sum().to_dict()
-        for idx, col in enumerate(cols):
+        null_count_row = ndf.null_count().row(0)
+        null_counts = dict(zip(cols, null_count_row, strict=True))
+        for col in cols:
             null_count = int(null_counts[col])
             if null_count > 0:
-                dtype = dtypes[idx] if dtypes[idx] is not None else str(ndf[col].dtype())
-                if dtype in ("float64", "int64", "float32", "int32"):
+                if ndf[col].dtype.is_numeric():
                     strategy = num_strategy
                 else:
                     strategy = cat_strategy
@@ -60,8 +58,11 @@ class NullHandler(BaseRule):
                 continue
             fill_values[col] = value
 
-        filled = ndf.fillna(fill_values)
-        return filled.to_native()
+        if fill_values:
+            ndf = ndf.with_columns(
+                **{col: ndf[col].fill_null(value) for col, value in fill_values.items()}
+            )
+        return ndf.to_native()
 
     def explain(self, decisions: list[Decision]) -> str:
         if not decisions:

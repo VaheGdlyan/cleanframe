@@ -63,4 +63,37 @@ def test_outlier_handler(messy_dataframe):
     # The original 150.0 should now be capped to 'upper'
     original_outlier_idx = messy_dataframe["age"].idxmax()
     clipped_value = cleaned_df.loc[original_outlier_idx, "age"]
-    assert clipped_value == upper 
+    assert clipped_value == upper  
+    from cleanframe.rules import SchemaCaster
+
+    def test_schema_caster(messy_dataframe):
+        """
+        Test SchemaCaster: it should detect and cast 'age' from float to Int64.
+        """
+        handler = SchemaCaster()
+        params = {"schema": {"age": "Int64"}}
+
+        # Detect casting needs
+        decisions = handler.detect(messy_dataframe, params)
+        assert decisions, "SchemaCaster should generate a Decision for 'age' type mismatch"
+        # At least one decision should be for 'age'
+        age_decisions = [d for d in decisions if d.column == "age"]
+        assert age_decisions, "Should detect type mismatch in 'age' column"
+        assert all(isinstance(d, Decision) for d in decisions)
+        assert age_decisions[0].action == "cast"
+
+        # Transform and check dtype
+        casted_df = handler.transform(messy_dataframe, decisions)
+        # For pandas backend
+        if hasattr(casted_df, "dtypes"):
+            dtype = casted_df.dtypes["age"]
+            # Works for pandas nullable integer
+            # Allow both 'Int64' and 'int64' (compatibility/strictness may vary)
+            assert str(dtype) in ("Int64", "int64")
+        # For polars backend
+        elif hasattr(casted_df["age"], "dtype"):
+            dtype = str(casted_df["age"].dtype)
+            # Accept 'Int64', 'Int64(', 'Int64', or equivalent, polars may say 'Int64' or 'Int64(?)'
+            assert "Int64" in dtype or "int64" in dtype.lower()
+        else:
+            raise AssertionError("Returned data is neither pandas nor polars DataFrame.")

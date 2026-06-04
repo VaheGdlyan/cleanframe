@@ -134,3 +134,33 @@ def test_cardinality_checker():
     assert "constant" not in transformed.columns
     assert "unique_id" in transformed.columns
     assert "normal" in transformed.columns
+
+
+def test_accessor_e2e():
+    import polars as pl
+    import cleanframe  # This triggers the .cf namespace registration
+
+    # 1. Create a messy dataframe matching our rule conditions
+    df = pl.DataFrame({
+        "null_col": [1.0, 2.0, None, 4.0, 5.0],
+        "outlier_col": [1.0, 2.0, 1.5, 1000.0, 2.0],  # 1000 is a massive outlier
+        "constant_col": ["a", "a", "a", "a", "a"]     # 1 unique value = dead column
+    })
+
+    # 2. Test the audit flow (The Command Center)
+    plan = df.cf.audit()
+    assert plan is not None, "Audit should return a populated CleaningPlan"
+
+    # 3. Test the execution flow (The Engine)
+    clean_df = df.cf.clean()
+
+    # 4. Verify the exact transformations
+    assert "constant_col" not in clean_df.columns, "CardinalityChecker failed to drop constant column"
+    
+    # Check that nulls were successfully imputed
+    null_count = clean_df.select(pl.col("null_col").is_null().sum()).item()
+    assert null_count == 0, "NullHandler failed to impute nulls"
+    
+    # Check that the massive outlier was clipped
+    max_outlier = clean_df.select(pl.col("outlier_col").max()).item()
+    assert max_outlier < 500, "OutlierHandler failed to clip the outlier"

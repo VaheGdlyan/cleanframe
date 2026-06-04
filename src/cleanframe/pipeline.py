@@ -56,16 +56,34 @@ class DataCleaner:
         return CleaningPlan(decisions)
 
     def transform(self, df: Any, plan: CleaningPlan) -> Any:
-        """Apply approved decisions in the plan via the execution engine."""
-        approved = [d for d in plan.decisions if d.approved]
-        engine = ExecutionEngine()
-        return engine.execute(df, CleaningPlan(approved))
+        # 1. Gather all decisions that have been approved
+        approved_decisions = [d for d in plan.decisions if d.approved]
+        if not approved_decisions:
+            return df
 
-    def fit_transform(
-        self,
-        df: Any,
-        params_map: dict[str, dict[str, Any]] | None = None,
-    ) -> Any:
-        """Fit rules and transform the data according to the resulting plan."""
-        plan = self.fit(df, params_map)
+        # 2. Sequentially route approved decisions through each registered rule
+        current_df = df
+        for rule in self.rules:
+            # Group decisions belonging to this specific rule class or rule name
+            rule_name = rule.__class__.__name__
+            rule_decisions = [
+                d for d in approved_decisions 
+                if getattr(d, "rule", "") == rule_name or getattr(d, "rule_name", "") == rule_name
+            ]
+            
+            # If this rule has approved actions, execute its working Narwhals transformation
+            if rule_decisions:
+                current_df = rule.transform(current_df, rule_decisions)
+                
+        return current_df
+
+    def fit_transform(self, df: Any) -> Any:
+        # 1. Run detection across all scouts
+        plan = self.fit(df)
+        
+        # 2. Auto-approve every single decision for the pipeline execution
+        for decision in plan.decisions:
+            decision.approved = True
+            
+        # 3. Run the bulletproof transformation loop
         return self.transform(df, plan)

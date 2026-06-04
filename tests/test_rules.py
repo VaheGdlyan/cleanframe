@@ -97,3 +97,45 @@ def test_outlier_handler(messy_dataframe):
             assert "Int64" in dtype or "int64" in dtype.lower()
         else:
             raise AssertionError("Returned data is neither pandas nor polars DataFrame.")
+
+            from cleanframe.rules import DuplicateHandler
+            import polars as pl
+
+            def test_duplicate_handler():
+                # Create a polars DataFrame with one exact duplicate row
+                df = pl.DataFrame({
+                    "name": ["Alice", "Bob", "Alice", "Carol"],
+                    "age": [25, 30, 25, 22]
+                })
+                # The first and third rows are identical
+
+                handler = DuplicateHandler()
+                # Detect duplicates: no subset specified, drop full duplicates
+                decisions = handler.detect(df, params={})
+                assert isinstance(decisions, list)
+                assert len(decisions) == 1
+                decision = decisions[0]
+                assert decision.action == "drop_duplicates"
+                assert decision.column == "all"
+                assert decision.parameters.get("num_duplicates", 0) == 1
+
+                # Transform and verify a duplicate row is dropped
+                deduped_df = handler.transform(df, decisions)
+                # For polars, resulting DataFrame has shape property
+                assert hasattr(deduped_df, "shape")
+                assert deduped_df.shape[0] == 3
+
+                from cleanframe.rules import DuplicateHandler
+                import polars as pl
+
+                def test_duplicate_handler():
+                    # Create a polars DataFrame with one exact duplicate row
+                    df = pl.DataFrame({
+                        "name": ["Alice", "Bob", "Alice", "Carol"],
+                        "age": [25, 30, 25, 22]
+                    })
+                    # The first and third rows are identical
+
+                    handler = DuplicateHandler()                  # Detect duplicates: no subset specified, drop full duplicates
+
+                    

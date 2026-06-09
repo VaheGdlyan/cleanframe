@@ -1,5 +1,6 @@
 import pandas as pd
 import polars as pl
+
 from cleanframe.pipeline import DataCleaner
 from cleanframe.plan import CleaningPlan
 from cleanframe.rules import (
@@ -10,6 +11,13 @@ from cleanframe.rules import (
     SchemaCaster,
 )
 from cleanframe.types import Decision
+
+_CF_REPORT_ATTR = "_cf_report"
+
+
+# ---------------------------------------------------------------------------
+# Individual rule tests
+# ---------------------------------------------------------------------------
 
 
 def test_null_handler(messy_dataframe):
@@ -176,6 +184,11 @@ def test_cardinality_checker():
     assert "normal" in transformed.columns
 
 
+# ---------------------------------------------------------------------------
+# Pipeline and accessor integration tests
+# ---------------------------------------------------------------------------
+
+
 def test_accessor_e2e():
     """The .cf accessor should audit and clean a messy polars DataFrame."""
     df = pl.DataFrame(
@@ -198,6 +211,64 @@ def test_accessor_e2e():
 
     max_outlier = clean_df.select(pl.col("outlier_col").max()).item()
     assert max_outlier < 500
+
+
+def test_domain_aware_detection():
+    """Pipeline should respect semantic types for identifiers and datetime hints."""
+    df = pl.DataFrame(
+        {
+            "user_id": [101, 102, 103],
+            "sale_price": ["12.5", "15.0", "10.2"],
+            "signup_date": ["2026-01-01", "2026-01-02", "2026-01-03"],
+        }
+    )
+
+    plan = DataCleaner().fit(df)
+
+    outlier_on_user_id = [
+        d
+        for d in plan.decisions
+        if d.rule_name == "OutlierHandler" and d.column == "user_id"
+    ]
+    assert not outlier_on_user_id, "user_id should be skipped by outlier rule"
+
+    datetime_decisions = [
+        d
+        for d in plan.decisions
+        if d.column == "signup_date" and d.rule_name == "SchemaCaster"
+    ]
+    assert datetime_decisions, "signup_date should trigger a datetime cast decision"
+    assert datetime_decisions[0].action == "cast"
+
+
+def test_telemetry_reporting():
+    """clean() should attach an AuditReport with shape deltas and mutation log."""
+    df = pl.DataFrame(
+        {
+            "constant_col": ["a", "a", "a"],
+            "val": [1, 2, 3],
+        }
+    )
+
+    clean_df = df.cf.clean()
+
+    assert hasattr(clean_df, _CF_REPORT_ATTR)
+    report = getattr(clean_df, _CF_REPORT_ATTR)
+    assert report is not None
+
+    assert report.initial_shape == (3, 2)
+    assert report.final_shape[0] == 3
+    assert report.final_shape[1] < 2
+
+    mutation_log = [
+        entry for entries in report.mutations.values() for entry in entries
+    ]
+    assert any("Dropped column 'constant_col'" in entry for entry in mutation_log)
+
+
+# ---------------------------------------------------------------------------
+# Plan persistence tests
+# ---------------------------------------------------------------------------
 
 
 def test_plan_serialization(tmp_path):
@@ -239,39 +310,3 @@ def test_plan_serialization(tmp_path):
         assert loaded.signal_strength == original.signal_strength
         assert loaded.rationale == original.rationale
         assert loaded.approved == original.approved
-
-
-def test_domain_aware_detection():
-    """Pipeline should respect semantic types for identifiers and datetime hints."""
-    # 1. Create DataFrame
-    df = pl.DataFrame({
-        "user_id": [101, 102, 103],
-        "sale_price": ["12.5", "15.0", "10.2"],
-        "signup_date": ["2026-01-01", "2026-01-02", "2026-01-03"],
-    })
-
-    # 2. Run DataCleaner .fit()
-    cleaner = DataCleaner()
-    plan = cleaner.fit(df)
-
-    # 3. Assert "user_id" is inferred as identifier and skipped by outlier engine
-    # Find all decisions referring to outlier handling on "user_id"
-    outlier_decisions_user_id = [
-        d for d in plan.decisions
-        if d.rule_name == "OutlierHandler" and d.column == "user_id"
-    ]
-    # For identifier columns, there should be no outlier decisions
-    assert len(outlier_decisions_user_id) == 0, "user_id should be skipped by outlier rule"
-
-    # 4. Assert "signup_date" triggers a datetime parsing suggestion or transformation
-    datetime_action_found = False
-    for d in plan.decisions:
-        if d.column == "signup_date" and d.rule_name in {"SchemaCaster", "NullHandler", "OutlierHandler"}:
-            if (
-                ("date" in d.action or "datetime" in d.action or "parse" in d.action)
-                or ("to_datetime" in d.action or "cast" in d.action)
-            ):
-                datetime_action_found = True
-                break
-    assert datetime_action_found, "signup_date should trigger a datetime parsing suggestion or transformation"
-

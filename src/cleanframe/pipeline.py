@@ -1,7 +1,5 @@
 from typing import Any
-
 from .base import BaseRule
-from .engine import ExecutionEngine
 from .plan import CleaningPlan
 from .rules import (
     CardinalityChecker,

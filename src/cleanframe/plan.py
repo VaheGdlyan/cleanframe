@@ -1,4 +1,7 @@
+import json
+from pathlib import Path
 from typing import Any
+
 from .types import Decision
 
 
@@ -17,7 +20,7 @@ class CleaningPlan:
         Args:
             decisions: The list of data cleaning decisions to manage.
         """
-        self.decisions = decisions
+        self.decisions: list[Decision] = decisions
 
     def approve_all(self) -> None:
         """
@@ -59,3 +62,36 @@ class CleaningPlan:
             }
             for d in self.decisions
         ]
+
+    def save(self, filepath: str | Path) -> None:
+        """
+        Serialize this CleaningPlan to JSON and write to a file.
+
+        Args:
+            filepath: The output file path as a string or Path.
+        """
+        path = Path(filepath)
+        data = {
+            "version": "1.0",
+            "decisions": [d.to_dict() for d in self.decisions],
+        }
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, filepath: str | Path) -> "CleaningPlan":
+        """
+        Load a CleaningPlan from a JSON file previously written by `save`.
+
+        Args:
+            filepath: The input file path as a string or Path.
+
+        Returns:
+            A reconstructed CleaningPlan instance.
+        """
+        path = Path(filepath)
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        decisions_data = data.get("decisions", [])
+        decisions = [Decision.from_dict(d) for d in decisions_data]
+        return cls(decisions)

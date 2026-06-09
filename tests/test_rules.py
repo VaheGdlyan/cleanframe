@@ -1,5 +1,6 @@
 import pandas as pd
 import polars as pl
+from cleanframe.plan import CleaningPlan
 from cleanframe.rules import (
     CardinalityChecker,
     DuplicateHandler,
@@ -137,30 +138,65 @@ def test_cardinality_checker():
 
 
 def test_accessor_e2e():
-    import polars as pl
-    import cleanframe  # This triggers the .cf namespace registration
+    """The .cf accessor should audit and clean a messy polars DataFrame."""
+    df = pl.DataFrame(
+        {
+            "null_col": [1.0, 2.0, None, 4.0, 5.0],
+            "outlier_col": [1.0, 2.0, 1.5, 1000.0, 2.0],
+            "constant_col": ["a", "a", "a", "a", "a"],
+        }
+    )
 
-    # 1. Create a messy dataframe matching our rule conditions
-    df = pl.DataFrame({
-        "null_col": [1.0, 2.0, None, 4.0, 5.0],
-        "outlier_col": [1.0, 2.0, 1.5, 1000.0, 2.0],  # 1000 is a massive outlier
-        "constant_col": ["a", "a", "a", "a", "a"]     # 1 unique value = dead column
-    })
-
-    # 2. Test the audit flow (The Command Center)
     plan = df.cf.audit()
-    assert plan is not None, "Audit should return a populated CleaningPlan"
+    assert plan is not None
 
-    # 3. Test the execution flow (The Engine)
     clean_df = df.cf.clean()
 
-    # 4. Verify the exact transformations
-    assert "constant_col" not in clean_df.columns, "CardinalityChecker failed to drop constant column"
-    
-    # Check that nulls were successfully imputed
+    assert "constant_col" not in clean_df.columns
+
     null_count = clean_df.select(pl.col("null_col").is_null().sum()).item()
-    assert null_count == 0, "NullHandler failed to impute nulls"
-    
-    # Check that the massive outlier was clipped
+    assert null_count == 0
+
     max_outlier = clean_df.select(pl.col("outlier_col").max()).item()
-    assert max_outlier < 500, "OutlierHandler failed to clip the outlier"
+    assert max_outlier < 500
+
+
+def test_plan_serialization(tmp_path):
+    """CleaningPlan.save/load should round-trip decisions to JSON."""
+    decisions = [
+        Decision(
+            rule_name="CardinalityChecker",
+            column="constant_col",
+            action="drop_column",
+            parameters={},
+            signal_strength=0.95,
+            rationale="Only one unique value.",
+            approved=True,
+        ),
+        Decision(
+            rule_name="NullHandler",
+            column="null_col",
+            action="impute_median",
+            parameters={"strategy": "median"},
+            signal_strength=0.85,
+            rationale="Contains missing values.",
+            approved=False,
+        ),
+    ]
+
+    plan = CleaningPlan(decisions)
+    filepath = tmp_path / "plan.json"
+    plan.save(filepath)
+    assert filepath.exists()
+
+    loaded_plan = CleaningPlan.load(filepath)
+    assert len(loaded_plan.decisions) == len(decisions)
+
+    for original, loaded in zip(decisions, loaded_plan.decisions, strict=True):
+        assert loaded.rule_name == original.rule_name
+        assert loaded.column == original.column
+        assert loaded.action == original.action
+        assert loaded.parameters == original.parameters
+        assert loaded.signal_strength == original.signal_strength
+        assert loaded.rationale == original.rationale
+        assert loaded.approved == original.approved

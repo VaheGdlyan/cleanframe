@@ -13,6 +13,22 @@ from .rules import (
 from .telemetry import AuditReport
 from .types import Decision
 
+_BUILTIN_RULES = frozenset({
+    "SchemaCaster",
+    "DuplicateHandler",
+    "NullHandler",
+    "OutlierHandler",
+    "CardinalityChecker",
+})
+
+_DEFAULT_RULES: list[BaseRule] = [
+    SchemaCaster(),
+    DuplicateHandler(),
+    NullHandler(),
+    OutlierHandler(),
+    CardinalityChecker(),
+]
+
 
 def _dataframe_shape(df: Any) -> tuple[int, int]:
     if hasattr(df, "shape"):
@@ -53,6 +69,12 @@ def _decisions_for_rule(
     ]
 
 
+def _mutation_entries(rule: BaseRule, decisions: list[Decision]) -> list[str]:
+    if type(rule).__name__ in _BUILTIN_RULES:
+        return [_decision_summary(d) for d in decisions]
+    return [rule.explain(decisions)]
+
+
 class DataCleaner:
     """
     Core orchestrator for running a series of data cleaning rules.
@@ -62,14 +84,14 @@ class DataCleaner:
     """
 
     def __init__(self, rules: list[BaseRule] | None = None) -> None:
-        self.rules = rules or [
-            SchemaCaster(),
-            DuplicateHandler(),
-            NullHandler(),
-            OutlierHandler(),
-            CardinalityChecker(),
-        ]
+        self.rules: list[BaseRule] = list(rules) if rules is not None else list(_DEFAULT_RULES)
         self.last_report: AuditReport | None = None
+
+    def register_rule(self, rule: BaseRule) -> None:
+        """Append a custom rule to the active execution registry."""
+        if not isinstance(rule, BaseRule):
+            raise TypeError("Registered rule must inherit from BaseRule")
+        self.rules.append(rule)
 
     def fit(
         self,
@@ -90,7 +112,14 @@ class DataCleaner:
         for rule in self.rules:
             rule_name = type(rule).__name__
             params = params_map.get(rule_name, {}) if params_map else {}
-            decisions.extend(rule.detect(df, params))
+            detected = rule.detect(df, params)
+            if not isinstance(detected, list) or not all(
+                isinstance(d, Decision) for d in detected
+            ):
+                raise TypeError(
+                    f"Rule {rule_name}.detect() must return a list of Decision"
+                )
+            decisions.extend(detected)
         return CleaningPlan(decisions)
 
     def transform(self, df: Any, plan: CleaningPlan) -> Any:
@@ -115,7 +144,7 @@ class DataCleaner:
             if not rule_decisions:
                 continue
 
-            mutations[rule_name] = [_decision_summary(d) for d in rule_decisions]
+            mutations[rule.name] = _mutation_entries(rule, rule_decisions)
             current_df = rule.transform(current_df, rule_decisions)
 
         self.last_report = AuditReport(

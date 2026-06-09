@@ -1,8 +1,9 @@
 from typing import Any
 
+import narwhals as nw
+
 from ..base import BaseRule
 from ..types import Decision
-import narwhals as nw
 
 
 class NullHandler(BaseRule):

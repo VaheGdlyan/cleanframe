@@ -1,7 +1,10 @@
 from typing import Any
-from ..base import BaseRule
-from ..types import Decision
+
 import narwhals as nw
+
+from ..base import BaseRule
+from ..inference import SemanticSchemaInferrer
+from ..types import Decision
 
 
 class OutlierHandler(BaseRule):
@@ -13,7 +16,13 @@ class OutlierHandler(BaseRule):
             return []
 
         k = params.get("multiplier", 1.5)
-        numeric_cols = [col for col in cols if ndf[col].dtype.is_numeric()]
+        inferrer = SemanticSchemaInferrer(df)
+        numeric_cols = [
+            col
+            for col in cols
+            if ndf[col].dtype.is_numeric()
+            and inferrer.get_semantic_type(col) != "identifier"
+        ]
 
         results: list[Decision] = []
 

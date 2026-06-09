@@ -1,5 +1,6 @@
 import pandas as pd
 import polars as pl
+from cleanframe.pipeline import DataCleaner
 from cleanframe.plan import CleaningPlan
 from cleanframe.rules import (
     CardinalityChecker,
@@ -31,6 +32,22 @@ def test_null_handler(messy_dataframe):
         raise AssertionError("Returned data is neither pandas nor polars DataFrame.")
 
 
+def test_outlier_handler_skips_identifier_columns():
+    """OutlierHandler should skip columns inferred as identifiers."""
+    df = pd.DataFrame(
+        {
+            "user_id": [1, 2, 3, 999_999],
+            "age": [25.0, 30.0, 22.0, 150.0],
+        }
+    )
+    handler = OutlierHandler()
+    decisions = handler.detect(df, params={})
+    detected_cols = {d.column for d in decisions}
+
+    assert "user_id" not in detected_cols
+    assert "age" in detected_cols
+
+
 def test_outlier_handler(messy_dataframe):
     """OutlierHandler should detect and cap the outlier in 'age'."""
     handler = OutlierHandler()
@@ -57,6 +74,28 @@ def test_outlier_handler(messy_dataframe):
     original_outlier_idx = messy_dataframe["age"].idxmax()
     clipped_value = cleaned_df.loc[original_outlier_idx, "age"]
     assert clipped_value == upper
+
+
+def test_schema_caster_datetime_hint():
+    """SchemaCaster should coerce datetime_hint string columns to Datetime."""
+    df = pd.DataFrame(
+        {
+            "created_at": ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "name": ["Alice", "Bob", "Carol"],
+        }
+    )
+    handler = SchemaCaster()
+    decisions = handler.detect(df, params={})
+
+    created_decisions = [d for d in decisions if d.column == "created_at"]
+    assert created_decisions, "Should detect datetime_hint column 'created_at'"
+    assert created_decisions[0].parameters["target_type"] == "Datetime"
+    assert created_decisions[0].parameters["method"] == "to_datetime"
+    assert not any(d.column == "name" for d in decisions)
+
+    casted_df = handler.transform(df, decisions)
+    dtype = str(casted_df.dtypes["created_at"])
+    assert "datetime" in dtype.lower()
 
 
 def test_schema_caster():
@@ -200,3 +239,39 @@ def test_plan_serialization(tmp_path):
         assert loaded.signal_strength == original.signal_strength
         assert loaded.rationale == original.rationale
         assert loaded.approved == original.approved
+
+
+def test_domain_aware_detection():
+    """Pipeline should respect semantic types for identifiers and datetime hints."""
+    # 1. Create DataFrame
+    df = pl.DataFrame({
+        "user_id": [101, 102, 103],
+        "sale_price": ["12.5", "15.0", "10.2"],
+        "signup_date": ["2026-01-01", "2026-01-02", "2026-01-03"],
+    })
+
+    # 2. Run DataCleaner .fit()
+    cleaner = DataCleaner()
+    plan = cleaner.fit(df)
+
+    # 3. Assert "user_id" is inferred as identifier and skipped by outlier engine
+    # Find all decisions referring to outlier handling on "user_id"
+    outlier_decisions_user_id = [
+        d for d in plan.decisions
+        if d.rule_name == "OutlierHandler" and d.column == "user_id"
+    ]
+    # For identifier columns, there should be no outlier decisions
+    assert len(outlier_decisions_user_id) == 0, "user_id should be skipped by outlier rule"
+
+    # 4. Assert "signup_date" triggers a datetime parsing suggestion or transformation
+    datetime_action_found = False
+    for d in plan.decisions:
+        if d.column == "signup_date" and d.rule_name in {"SchemaCaster", "NullHandler", "OutlierHandler"}:
+            if (
+                ("date" in d.action or "datetime" in d.action or "parse" in d.action)
+                or ("to_datetime" in d.action or "cast" in d.action)
+            ):
+                datetime_action_found = True
+                break
+    assert datetime_action_found, "signup_date should trigger a datetime parsing suggestion or transformation"
+

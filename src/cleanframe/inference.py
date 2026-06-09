@@ -1,4 +1,5 @@
-from typing import Any, Dict, Optional
+from typing import Any
+
 
 def infer_semantic_type(column_name: str) -> str | None:
     """
@@ -14,44 +15,25 @@ def infer_semantic_type(column_name: str) -> str | None:
 
     if "email" in name:
         return "email"
-    if any(x in name for x in ["price", "revenue", "amount"]):
+    if any(x in name for x in ("price", "revenue", "amount")):
         return "currency"
     if name == "id" or name.endswith("_id"):
         return "identifier"
-    if (
-        "date" in name
-        or "timestamp" in name
-        or "created_at" in name
-    ):
+    if "date" in name or "timestamp" in name or "created_at" in name:
         return "datetime_hint"
     return None
 
+
 class SemanticSchemaInferrer:
-    """
-    Infers and stores column semantic types based on column names.
-    """
+    """Infers and stores column semantic types based on column names."""
 
     def __init__(self, df: Any) -> None:
-        """
-        Scan columns and record semantic types for each column, if any.
-
-        Args:
-            df: The input dataframe-like object (must have a `.columns` attribute).
-        """
-        self.semantic_types: Dict[str, str] = {}
+        self.semantic_types: dict[str, str] = {}
         for col in getattr(df, "columns", []):
             stype = infer_semantic_type(col)
             if stype is not None:
                 self.semantic_types[col] = stype
 
-    def get_semantic_type(self, column: str) -> Optional[str]:
-        """
-        Retrieve the semantic type mapping for a specific column, if available.
-
-        Args:
-            column: The column name.
-
-        Returns:
-            The semantic type if mapped, else None.
-        """
+    def get_semantic_type(self, column: str) -> str | None:
+        """Return the semantic type for a column, or None if not inferred."""
         return self.semantic_types.get(column)

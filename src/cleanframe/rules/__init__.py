@@ -4,6 +4,7 @@ from .duplicate_handler import DuplicateHandler
 from .null_handler import NullHandler
 from .outlier_handler import OutlierHandler
 from .schema_caster import SchemaCaster
+from .fuzzy_unification import FuzzyUnificationRule
 
 __all__ = [
     "BaseRule",
@@ -12,4 +13,5 @@ __all__ = [
     "NullHandler",
     "OutlierHandler",
     "SchemaCaster",
+    "FuzzyUnificationRule",
 ]

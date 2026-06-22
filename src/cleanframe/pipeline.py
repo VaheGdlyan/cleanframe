@@ -1,5 +1,8 @@
+import math
 import time
 from typing import Any
+
+import narwhals as nw
 
 from .base import BaseRule
 from .plan import CleaningPlan
@@ -75,6 +78,48 @@ def _mutation_entries(rule: BaseRule, decisions: list[Decision]) -> list[str]:
     return [rule.explain(decisions)]
 
 
+def _compute_dataframe_stats(df: Any) -> dict[str, dict[str, float]]:
+    ndf = nw.from_native(df)
+    if ndf.shape[0] == 0:
+        return {}
+
+    exprs = []
+    for col in ndf.columns:
+        exprs.append(nw.col(col).is_null().mean().alias(f"{col}__null_ratio"))
+        if ndf[col].dtype.is_numeric():
+            exprs.append(nw.col(col).mean().alias(f"{col}__mean"))
+            exprs.append(nw.col(col).std().alias(f"{col}__std_dev"))
+        else:
+            exprs.append(nw.col(col).n_unique().alias(f"{col}__unique_count"))
+
+    if not exprs:
+        return {}
+
+    stats_df = ndf.select(*exprs)
+    row_values = stats_df.row(0)
+    flat_stats = dict(zip(stats_df.columns, row_values, strict=True))
+
+    structured: dict[str, dict[str, float]] = {}
+    for key, val in flat_stats.items():
+        col, metric = key.split("__", 1)
+        if col not in structured:
+            structured[col] = {}
+        val_float = float(val) if val is not None else 0.0
+        if math.isnan(val_float):
+            val_float = 0.0
+        structured[col][metric] = val_float
+
+    # Get unique categories for categorical columns to track if "new categories appear"
+    for col in ndf.columns:
+        if not ndf[col].dtype.is_numeric():
+            unique_vals = ndf[col].unique().to_list()
+            for val in unique_vals:
+                if val is not None:
+                    structured[col][f"cat:{val}"] = 1.0
+
+    return structured
+
+
 class DataCleaner:
     """
     Core orchestrator for running a series of data cleaning rules.
@@ -108,6 +153,7 @@ class DataCleaner:
         Returns:
             CleaningPlan containing all collected decisions.
         """
+        baseline_stats = _compute_dataframe_stats(df)
         decisions: list[Decision] = []
         for rule in self.rules:
             rule_name = type(rule).__name__
@@ -120,12 +166,57 @@ class DataCleaner:
                     f"Rule {rule_name}.detect() must return a list of Decision"
                 )
             decisions.extend(detected)
-        return CleaningPlan(decisions)
+        return CleaningPlan(decisions, baseline_stats)
 
     def transform(self, df: Any, plan: CleaningPlan) -> Any:
         start_time = time.perf_counter()
         initial_shape = _dataframe_shape(df)
         mutations: dict[str, list[str]] = {}
+
+        # Check for distribution drift
+        drift_alerts: list[str] = []
+        if plan.baseline_stats:
+            current_stats = _compute_dataframe_stats(df)
+            for col, base_col_stats in plan.baseline_stats.items():
+                if col not in current_stats:
+                    drift_alerts.append(f"Column '{col}' is missing in the incoming data")
+                    continue
+
+                curr_col_stats = current_stats[col]
+
+                # Check null_ratio shift
+                base_null = base_col_stats.get("null_ratio", 0.0)
+                curr_null = curr_col_stats.get("null_ratio", 0.0)
+                if abs(curr_null - base_null) > 0.10:
+                    drift_alerts.append(
+                        f"Column '{col}': null_ratio shifted by {abs(curr_null - base_null):.1%} "
+                        f"(baseline: {base_null:.1%}, current: {curr_null:.1%})"
+                    )
+
+                # Check mean shift for numeric columns
+                if "mean" in base_col_stats and "mean" in curr_col_stats:
+                    base_mean = base_col_stats["mean"]
+                    curr_mean = curr_col_stats["mean"]
+                    if base_mean != 0.0:
+                        mean_shift = abs(curr_mean - base_mean) / abs(base_mean)
+                    else:
+                        mean_shift = abs(curr_mean)
+
+                    if mean_shift > 0.15:
+                        drift_alerts.append(
+                            f"Column '{col}': mean shifted by {mean_shift:.1%} "
+                            f"(baseline: {base_mean:.4f}, current: {curr_mean:.4f})"
+                        )
+
+                # Check for new categories in categorical columns
+                if "unique_count" in base_col_stats:
+                    base_cats = {k.split("cat:", 1)[1] for k in base_col_stats if k.startswith("cat:")}
+                    curr_cats = {k.split("cat:", 1)[1] for k in curr_col_stats if k.startswith("cat:")}
+                    new_cats = curr_cats - base_cats
+                    if new_cats:
+                        drift_alerts.append(
+                            f"Column '{col}': new categories detected: {sorted(list(new_cats))}"
+                        )
 
         approved = [d for d in plan.decisions if d.approved]
         if not approved:
@@ -134,6 +225,7 @@ class DataCleaner:
                 final_shape=initial_shape,
                 mutations=mutations,
                 execution_time_ms=(time.perf_counter() - start_time) * 1000,
+                drift_alerts=drift_alerts,
             )
             return df
 
@@ -152,6 +244,7 @@ class DataCleaner:
             final_shape=_dataframe_shape(current_df),
             mutations=mutations,
             execution_time_ms=(time.perf_counter() - start_time) * 1000,
+            drift_alerts=drift_alerts,
         )
         return current_df
 

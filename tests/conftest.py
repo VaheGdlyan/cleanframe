@@ -1,5 +1,5 @@
 import pytest
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 from typing import Any
 
 

@@ -1,10 +1,12 @@
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .types import Decision
 
 
+@dataclass
 class CleaningPlan:
     """
     Represents a plan comprising a set of data cleaning decisions.
@@ -13,14 +15,8 @@ class CleaningPlan:
     cleaning actions prior to their application.
     """
 
-    def __init__(self, decisions: list[Decision]) -> None:
-        """
-        Initialize a CleaningPlan with a collection of Decision objects.
-
-        Args:
-            decisions: The list of data cleaning decisions to manage.
-        """
-        self.decisions: list[Decision] = decisions
+    decisions: list[Decision]
+    baseline_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def approve_all(self) -> None:
         """
@@ -74,6 +70,7 @@ class CleaningPlan:
         data = {
             "version": "1.0",
             "decisions": [d.to_dict() for d in self.decisions],
+            "baseline_stats": self.baseline_stats,
         }
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -94,4 +91,6 @@ class CleaningPlan:
             data = json.load(f)
         decisions_data = data.get("decisions", [])
         decisions = [Decision.from_dict(d) for d in decisions_data]
-        return cls(decisions)
+        baseline_stats = data.get("baseline_stats", {})
+        return cls(decisions, baseline_stats)
+

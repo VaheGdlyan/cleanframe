@@ -6,6 +6,7 @@ from .outlier_handler import OutlierHandler
 from .schema_caster import SchemaCaster
 from .fuzzy_unification import FuzzyUnificationRule
 from .knn_imputer import KNNImputationRule
+from .cross_column import CrossColumnConsistencyRule, ConsistencyConstraint
 
 __all__ = [
     "BaseRule",
@@ -16,4 +17,6 @@ __all__ = [
     "SchemaCaster",
     "FuzzyUnificationRule",
     "KNNImputationRule",
+    "CrossColumnConsistencyRule",
+    "ConsistencyConstraint",
 ]

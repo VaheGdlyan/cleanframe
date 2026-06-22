@@ -293,6 +293,16 @@ class DataCleaner:
 
         approved = [d for d in plan.decisions if d.approved]
         leakage_warnings = getattr(plan, "leakage_warnings", [])
+        
+        consistency_warnings: list[str] = []
+        for d in plan.decisions:
+            if d.rule_name == "CrossColumnConsistencyRule" and d.action == "flag_violation":
+                violation_count = d.parameters.get("violation_count", 0)
+                constraint_name = d.parameters.get("constraint_name", "")
+                consistency_warnings.append(
+                    f"CONSTRAINT VIOLATION: {violation_count} rows failed '{constraint_name}' rule"
+                )
+
         if not approved:
             self.last_report = AuditReport(
                 initial_shape=initial_shape,
@@ -301,6 +311,7 @@ class DataCleaner:
                 execution_time_ms=(time.perf_counter() - start_time) * 1000,
                 drift_alerts=drift_alerts,
                 leakage_warnings=leakage_warnings,
+                consistency_warnings=consistency_warnings,
             )
             return df
 
@@ -321,6 +332,7 @@ class DataCleaner:
             execution_time_ms=(time.perf_counter() - start_time) * 1000,
             drift_alerts=drift_alerts,
             leakage_warnings=leakage_warnings,
+            consistency_warnings=consistency_warnings,
         )
         return current_df
 

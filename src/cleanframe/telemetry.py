@@ -13,6 +13,7 @@ class AuditReport:
         execution_time_ms: float,
         drift_alerts: list[str] | None = None,
         leakage_warnings: list[str] | None = None,
+        consistency_warnings: list[str] | None = None,
     ) -> None:
         self.initial_shape = initial_shape
         self.final_shape = final_shape
@@ -20,6 +21,7 @@ class AuditReport:
         self.execution_time_ms = execution_time_ms
         self.drift_alerts: list[str] = drift_alerts if drift_alerts is not None else []
         self.leakage_warnings: list[str] = leakage_warnings if leakage_warnings is not None else []
+        self.consistency_warnings: list[str] = consistency_warnings if consistency_warnings is not None else []
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -29,6 +31,7 @@ class AuditReport:
             "execution_time_ms": self.execution_time_ms,
             "drift_alerts": self.drift_alerts,
             "leakage_warnings": self.leakage_warnings,
+            "consistency_warnings": self.consistency_warnings,
         }
 
     def display(self) -> None:
@@ -55,6 +58,11 @@ class AuditReport:
             print("TARGET LEAKAGE ALERTS:")
             for warn in self.leakage_warnings:
                 print(f"  • {warn}")
+            print("-" * 48)
+        if self.consistency_warnings:
+            print("CONSISTENCY ALERTS:")
+            for alert in self.consistency_warnings:
+                print(f"  • {alert}")
             print("-" * 48)
         if self.drift_alerts:
             print("DRIFT ALERTS:")

@@ -142,6 +142,7 @@ class DataCleaner:
         self,
         df: Any,
         params_map: dict[str, dict[str, Any]] | None = None,
+        target_col: str | None = None,
     ) -> CleaningPlan:
         """
         Run each rule's detect method and aggregate the resulting decisions.
@@ -149,10 +150,15 @@ class DataCleaner:
         Args:
             df: Input dataset (pandas or polars DataFrame).
             params_map: Optional mapping from rule class name to parameter dict.
+            target_col: Optional target variable to check for target leakage.
 
         Returns:
             CleaningPlan containing all collected decisions.
         """
+        ndf = nw.from_native(df)
+        if target_col is not None:
+            assert target_col in ndf.columns, f"Target column '{target_col}' not found in dataset"
+
         baseline_stats = _compute_dataframe_stats(df)
         decisions: list[Decision] = []
         for rule in self.rules:
@@ -166,7 +172,39 @@ class DataCleaner:
                     f"Rule {rule_name}.detect() must return a list of Decision"
                 )
             decisions.extend(detected)
-        return CleaningPlan(decisions, baseline_stats)
+
+        leakage_warnings: list[str] = []
+        if target_col is not None:
+            # 1. Semantic Risk
+            target_lower = target_col.lower()
+            for col in ndf.columns:
+                if col.lower() != target_lower and target_lower in col.lower():
+                    leakage_warnings.append(
+                        f"HIGH RISK: Column '{col}' semantically leaks target '{target_col}'"
+                    )
+
+            # 2. Correlation Risk
+            is_target_numeric = ndf[target_col].dtype.is_numeric() or ndf[target_col].dtype.is_boolean()
+            if is_target_numeric:
+                corr_exprs = []
+                corr_cols = []
+                for col in ndf.columns:
+                    if col != target_col and (ndf[col].dtype.is_numeric() or ndf[col].dtype.is_boolean()):
+                        corr_exprs.append(nw.corr(col, target_col).alias(f"{col}__corr"))
+                        corr_cols.append(col)
+
+                if corr_exprs:
+                    corr_df = ndf.select(*corr_exprs)
+                    row_vals = corr_df.row(0)
+                    for col, val in zip(corr_cols, row_vals, strict=True):
+                        if val is not None:
+                            val_float = float(val)
+                            if not math.isnan(val_float) and abs(val_float) > 0.85:
+                                leakage_warnings.append(
+                                    f"HIGH RISK: Column '{col}' has high correlation ({val_float:.4f}) with target '{target_col}'"
+                                )
+
+        return CleaningPlan(decisions, baseline_stats, leakage_warnings)
 
     def transform(self, df: Any, plan: CleaningPlan) -> Any:
         start_time = time.perf_counter()
@@ -219,6 +257,7 @@ class DataCleaner:
                         )
 
         approved = [d for d in plan.decisions if d.approved]
+        leakage_warnings = getattr(plan, "leakage_warnings", [])
         if not approved:
             self.last_report = AuditReport(
                 initial_shape=initial_shape,
@@ -226,6 +265,7 @@ class DataCleaner:
                 mutations=mutations,
                 execution_time_ms=(time.perf_counter() - start_time) * 1000,
                 drift_alerts=drift_alerts,
+                leakage_warnings=leakage_warnings,
             )
             return df
 
@@ -245,11 +285,12 @@ class DataCleaner:
             mutations=mutations,
             execution_time_ms=(time.perf_counter() - start_time) * 1000,
             drift_alerts=drift_alerts,
+            leakage_warnings=leakage_warnings,
         )
         return current_df
 
-    def fit_transform(self, df: Any) -> Any:
-        plan = self.fit(df)
+    def fit_transform(self, df: Any, target_col: str | None = None) -> Any:
+        plan = self.fit(df, target_col=target_col)
         for decision in plan.decisions:
             decision.approved = True
         return self.transform(df, plan)

@@ -22,6 +22,7 @@ _BUILTIN_RULES = frozenset({
     "NullHandler",
     "OutlierHandler",
     "CardinalityChecker",
+    "KNNImputationRule",
 })
 
 _DEFAULT_RULES: list[BaseRule] = [
@@ -57,6 +58,12 @@ def _decision_summary(decision: Decision) -> str:
         return f"Cast '{column}'"
     if action in {"median", "mode"}:
         return f"Imputed nulls in '{column}' ({action})"
+    if action == "knn_impute":
+        explanation = decision.parameters.get("explanation", "kNN imputed")
+        return f"Imputed nulls in '{column}' ({explanation})"
+    if action == "median_fallback":
+        explanation = decision.parameters.get("explanation", "median fallback")
+        return f"Imputed nulls in '{column}' ({explanation})"
     return f"{action.replace('_', ' ').capitalize()} on '{column}'"
 
 
@@ -128,8 +135,27 @@ class DataCleaner:
     SchemaCaster → DuplicateHandler → NullHandler → OutlierHandler → CardinalityChecker
     """
 
-    def __init__(self, rules: list[BaseRule] | None = None) -> None:
-        self.rules: list[BaseRule] = list(rules) if rules is not None else list(_DEFAULT_RULES)
+    def __init__(
+        self,
+        rules: list[BaseRule] | None = None,
+        impute_strategy: str = "median",
+    ) -> None:
+        self.impute_strategy = impute_strategy
+        if rules is not None:
+            self.rules = list(rules)
+        else:
+            if impute_strategy == "knn":
+                from .rules.knn_imputer import KNNImputationRule
+                self.rules = [
+                    SchemaCaster(),
+                    DuplicateHandler(),
+                    KNNImputationRule(),
+                    NullHandler(),
+                    OutlierHandler(),
+                    CardinalityChecker(),
+                ]
+            else:
+                self.rules = list(_DEFAULT_RULES)
         self.last_report: AuditReport | None = None
 
     def register_rule(self, rule: BaseRule) -> None:
@@ -155,6 +181,15 @@ class DataCleaner:
         Returns:
             CleaningPlan containing all collected decisions.
         """
+        # Override NullHandler strategy if using knn imputer
+        if self.impute_strategy == "knn":
+            if params_map is None:
+                params_map = {}
+            if "NullHandler" not in params_map:
+                params_map["NullHandler"] = {}
+            if "numeric_strategy" not in params_map["NullHandler"]:
+                params_map["NullHandler"]["numeric_strategy"] = "none"
+
         ndf = nw.from_native(df)
         if target_col is not None:
             assert target_col in ndf.columns, f"Target column '{target_col}' not found in dataset"

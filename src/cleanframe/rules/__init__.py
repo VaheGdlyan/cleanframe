@@ -5,6 +5,7 @@ from .null_handler import NullHandler
 from .outlier_handler import OutlierHandler
 from .schema_caster import SchemaCaster
 from .fuzzy_unification import FuzzyUnificationRule
+from .knn_imputer import KNNImputationRule
 
 __all__ = [
     "BaseRule",
@@ -14,4 +15,5 @@ __all__ = [
     "OutlierHandler",
     "SchemaCaster",
     "FuzzyUnificationRule",
+    "KNNImputationRule",
 ]

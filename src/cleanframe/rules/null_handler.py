@@ -25,6 +25,8 @@ class NullHandler(BaseRule):
             if null_count > 0:
                 if ndf[col].dtype.is_numeric():
                     strategy = num_strategy
+                    if strategy is None or strategy == "none":
+                        continue
                 else:
                     strategy = cat_strategy
                 signal_strength = null_count / nrows

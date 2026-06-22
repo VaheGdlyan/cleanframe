@@ -1,29 +1,66 @@
+from typing import Any
+from .events import TelemetryEvent
+
+
 class AuditReport:
     """
     Telemetry report for a cleaning operation.
 
     Tracks dataset shape, per-rule mutation summaries, and execution time.
+    Supports backward-compatible DX while being powered by TelemetryEvents.
     """
 
     def __init__(
         self,
         initial_shape: tuple[int, int],
         final_shape: tuple[int, int],
-        mutations: dict[str, list[str]],
         execution_time_ms: float,
+        mutations: dict[str, list[str]] | None = None,
         drift_alerts: list[str] | None = None,
         leakage_warnings: list[str] | None = None,
         consistency_warnings: list[str] | None = None,
+        events: list[TelemetryEvent] | None = None,
     ) -> None:
         self.initial_shape = initial_shape
         self.final_shape = final_shape
-        self.mutations = mutations
         self.execution_time_ms = execution_time_ms
-        self.drift_alerts: list[str] = drift_alerts if drift_alerts is not None else []
-        self.leakage_warnings: list[str] = leakage_warnings if leakage_warnings is not None else []
-        self.consistency_warnings: list[str] = consistency_warnings if consistency_warnings is not None else []
+        self.events = events if events is not None else []
 
-    def to_dict(self) -> dict[str, object]:
+        if events is not None:
+            # Dynamically compile attributes from structured events
+            self.drift_alerts = [
+                e.payload["alert"]
+                for e in events
+                if e.event_type == "drift_alert" and "alert" in e.payload
+            ]
+            self.leakage_warnings = [
+                e.payload["warning"]
+                for e in events
+                if e.event_type == "target_leakage" and "warning" in e.payload
+            ]
+            self.consistency_warnings = [
+                e.payload["warning"]
+                for e in events
+                if e.event_type == "constraint_violation" and "warning" in e.payload
+            ]
+
+            self.mutations: dict[str, list[str]] = {}
+            for e in events:
+                if e.event_type == "rule_mutation":
+                    rule = e.rule_name or "Unknown"
+                    if rule not in self.mutations:
+                        self.mutations[rule] = []
+                    summary = e.payload.get("summary", "")
+                    if summary and summary not in self.mutations[rule]:
+                        self.mutations[rule].append(summary)
+        else:
+            self.drift_alerts = drift_alerts if drift_alerts is not None else []
+            self.leakage_warnings = leakage_warnings if leakage_warnings is not None else []
+            self.consistency_warnings = consistency_warnings if consistency_warnings is not None else []
+            self.mutations = mutations if mutations is not None else {}
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the report data to a dictionary."""
         return {
             "initial_shape": self.initial_shape,
             "final_shape": self.final_shape,
@@ -35,6 +72,7 @@ class AuditReport:
         }
 
     def display(self) -> None:
+        """Print a formatted terminal summary of the cleaning audit."""
         row_diff = self.final_shape[0] - self.initial_shape[0]
         col_diff = self.final_shape[1] - self.initial_shape[1]
 
@@ -49,8 +87,16 @@ class AuditReport:
             f"Final shape:   rows={self.final_shape[0]}, "
             f"columns={self.final_shape[1]}"
         )
-        print(f"Rows change:   {row_diff:+d}")
-        print(f"Cols change:   {col_diff:+d}")
+        print(
+            f"Rows change:   {row_diff:+d}"
+            if row_diff != 0
+            else f"Rows change:   {row_diff}"
+        )
+        print(
+            f"Cols change:   {col_diff:+d}"
+            if col_diff != 0
+            else f"Cols change:   {col_diff}"
+        )
         print("-" * 48)
         print(f"Execution time: {self.execution_time_ms:.2f} ms")
         print("-" * 48)
@@ -78,4 +124,3 @@ class AuditReport:
                 for action in actions:
                     print(f"    - {action}")
         print("=" * 48)
-

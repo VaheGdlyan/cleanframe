@@ -4,6 +4,8 @@ from typing import Any
 
 import narwhals as nw
 
+import uuid
+from datetime import datetime, timezone
 from .base import RuleProtocol
 from .plan import CleaningPlan
 from .registry import discover_plugins
@@ -14,7 +16,7 @@ from .rules import (
     OutlierHandler,
     SchemaCaster,
 )
-from .telemetry import AuditReport
+from .telemetry import AuditReport, TelemetryEvent, TelemetrySink
 from .types import Decision
 
 _BUILTIN_RULES = frozenset({
@@ -141,13 +143,14 @@ class DataCleaner:
     Default rule sequence:
     SchemaCaster → DuplicateHandler → NullHandler → OutlierHandler → CardinalityChecker
     """
-
     def __init__(
         self,
         rules: list[RuleProtocol] | None = None,
         impute_strategy: str = "median",
+        sinks: list[TelemetrySink] | None = None,
     ) -> None:
         self.impute_strategy = impute_strategy
+        self.sinks: list[TelemetrySink] = list(sinks) if sinks is not None else []
         self.rules: list[RuleProtocol] = []
         if rules is not None:
             self.rules = list(rules)
@@ -167,6 +170,25 @@ class DataCleaner:
             self.rules.extend(discover_plugins())
         self.last_report: AuditReport | None = None
 
+    def _emit(
+        self,
+        event_type: str,
+        rule_name: str | None,
+        column: str | None,
+        payload: dict[str, Any],
+        run_id: str,
+    ) -> TelemetryEvent:
+        event = TelemetryEvent(
+            event_type=event_type,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            run_id=run_id,
+            rule_name=rule_name,
+            column=column,
+            payload=payload,
+        )
+        for sink in self.sinks:
+            sink.emit(event)
+        return event
     def register_rule(self, rule: RuleProtocol) -> None:
         """Append a custom rule to the active execution registry."""
         if not isinstance(rule, RuleProtocol):
@@ -190,6 +212,7 @@ class DataCleaner:
         Returns:
             CleaningPlan containing all collected decisions.
         """
+        run_id = str(uuid.uuid4())
         # Override NullHandler strategy if using knn imputer
         if self.impute_strategy == "knn":
             if params_map is None:
@@ -223,8 +246,14 @@ class DataCleaner:
             target_lower = target_col.lower()
             for col in ndf.columns:
                 if col.lower() != target_lower and target_lower in col.lower():
-                    leakage_warnings.append(
-                        f"HIGH RISK: Column '{col}' semantically leaks target '{target_col}'"
+                    warn_msg = f"HIGH RISK: Column '{col}' semantically leaks target '{target_col}'"
+                    leakage_warnings.append(warn_msg)
+                    self._emit(
+                        event_type="target_leakage",
+                        rule_name="TargetLeakageDetector",
+                        column=col,
+                        payload={"warning": warn_msg},
+                        run_id=run_id,
                     )
 
             # 2. Correlation Risk
@@ -244,8 +273,14 @@ class DataCleaner:
                         if val is not None:
                             val_float = float(val)
                             if not math.isnan(val_float) and abs(val_float) > 0.85:
-                                leakage_warnings.append(
-                                    f"HIGH RISK: Column '{col}' has high correlation ({val_float:.4f}) with target '{target_col}'"
+                                warn_msg = f"HIGH RISK: Column '{col}' has high correlation ({val_float:.4f}) with target '{target_col}'"
+                                leakage_warnings.append(warn_msg)
+                                self._emit(
+                                    event_type="target_leakage",
+                                    rule_name="TargetLeakageDetector",
+                                    column=col,
+                                    payload={"warning": warn_msg, "correlation": val_float},
+                                    run_id=run_id,
                                 )
 
         return CleaningPlan(decisions, baseline_stats, leakage_warnings)
@@ -254,14 +289,57 @@ class DataCleaner:
         start_time = time.perf_counter()
         initial_shape = _dataframe_shape(df)
         mutations: dict[str, list[str]] = {}
+        run_id = str(uuid.uuid4())
+        events: list[TelemetryEvent] = []
+
+        # Emit target leakage warnings from plan
+        leakage_warnings = getattr(plan, "leakage_warnings", [])
+        for warning in leakage_warnings:
+            col = None
+            if "Column '" in warning:
+                col = warning.split("Column '", 1)[1].split("'", 1)[0]
+            event = self._emit(
+                event_type="target_leakage",
+                rule_name="TargetLeakageDetector",
+                column=col,
+                payload={"warning": warning},
+                run_id=run_id,
+            )
+            events.append(event)
+
+        # Emit constraint violations (consistency warnings)
+        for d in plan.decisions:
+            if d.rule_name == "CrossColumnConsistencyRule" and d.action == "flag_violation":
+                violation_count = d.parameters.get("violation_count", 0)
+                constraint_name = d.parameters.get("constraint_name", "")
+                msg = f"CONSTRAINT VIOLATION: {violation_count} rows failed '{constraint_name}' rule"
+                event = self._emit(
+                    event_type="constraint_violation",
+                    rule_name="CrossColumnConsistencyRule",
+                    column=d.column,
+                    payload={
+                        "warning": msg,
+                        "constraint_name": constraint_name,
+                        "violation_count": violation_count,
+                    },
+                    run_id=run_id,
+                )
+                events.append(event)
 
         # Check for distribution drift
-        drift_alerts: list[str] = []
         if plan.baseline_stats:
             current_stats = _compute_dataframe_stats(df)
             for col, base_col_stats in plan.baseline_stats.items():
                 if col not in current_stats:
-                    drift_alerts.append(f"Column '{col}' is missing in the incoming data")
+                    msg = f"Column '{col}' is missing in the incoming data"
+                    event = self._emit(
+                        event_type="drift_alert",
+                        rule_name="DistributionDriftDetector",
+                        column=col,
+                        payload={"alert": msg},
+                        run_id=run_id,
+                    )
+                    events.append(event)
                     continue
 
                 curr_col_stats = current_stats[col]
@@ -270,10 +348,18 @@ class DataCleaner:
                 base_null = base_col_stats.get("null_ratio", 0.0)
                 curr_null = curr_col_stats.get("null_ratio", 0.0)
                 if abs(curr_null - base_null) > 0.10:
-                    drift_alerts.append(
+                    msg = (
                         f"Column '{col}': null_ratio shifted by {abs(curr_null - base_null):.1%} "
                         f"(baseline: {base_null:.1%}, current: {curr_null:.1%})"
                     )
+                    event = self._emit(
+                        event_type="drift_alert",
+                        rule_name="DistributionDriftDetector",
+                        column=col,
+                        payload={"alert": msg},
+                        run_id=run_id,
+                    )
+                    events.append(event)
 
                 # Check mean shift for numeric columns
                 if "mean" in base_col_stats and "mean" in curr_col_stats:
@@ -285,10 +371,18 @@ class DataCleaner:
                         mean_shift = abs(curr_mean)
 
                     if mean_shift > 0.15:
-                        drift_alerts.append(
+                        msg = (
                             f"Column '{col}': mean shifted by {mean_shift:.1%} "
                             f"(baseline: {base_mean:.4f}, current: {curr_mean:.4f})"
                         )
+                        event = self._emit(
+                            event_type="drift_alert",
+                            rule_name="DistributionDriftDetector",
+                            column=col,
+                            payload={"alert": msg},
+                            run_id=run_id,
+                        )
+                        events.append(event)
 
                 # Check for new categories in categorical columns
                 if "unique_count" in base_col_stats:
@@ -296,31 +390,23 @@ class DataCleaner:
                     curr_cats = {k.split("cat:", 1)[1] for k in curr_col_stats if k.startswith("cat:")}
                     new_cats = curr_cats - base_cats
                     if new_cats:
-                        drift_alerts.append(
-                            f"Column '{col}': new categories detected: {sorted(list(new_cats))}"
+                        msg = f"Column '{col}': new categories detected: {sorted(list(new_cats))}"
+                        event = self._emit(
+                            event_type="drift_alert",
+                            rule_name="DistributionDriftDetector",
+                            column=col,
+                            payload={"alert": msg},
+                            run_id=run_id,
                         )
+                        events.append(event)
 
         approved = [d for d in plan.decisions if d.approved]
-        leakage_warnings = getattr(plan, "leakage_warnings", [])
-        
-        consistency_warnings: list[str] = []
-        for d in plan.decisions:
-            if d.rule_name == "CrossColumnConsistencyRule" and d.action == "flag_violation":
-                violation_count = d.parameters.get("violation_count", 0)
-                constraint_name = d.parameters.get("constraint_name", "")
-                consistency_warnings.append(
-                    f"CONSTRAINT VIOLATION: {violation_count} rows failed '{constraint_name}' rule"
-                )
-
         if not approved:
             self.last_report = AuditReport(
                 initial_shape=initial_shape,
                 final_shape=initial_shape,
-                mutations=mutations,
                 execution_time_ms=(time.perf_counter() - start_time) * 1000,
-                drift_alerts=drift_alerts,
-                leakage_warnings=leakage_warnings,
-                consistency_warnings=consistency_warnings,
+                events=events,
             )
             return df
 
@@ -331,17 +417,26 @@ class DataCleaner:
             if not rule_decisions:
                 continue
 
-            mutations[rule.name] = _mutation_entries(rule, rule_decisions)
+            summaries = _mutation_entries(rule, rule_decisions)
+            mutations[rule.name] = summaries
             current_df = rule.transform(current_df, rule_decisions)
+
+            for summary in summaries:
+                col = rule_decisions[0].column if rule_decisions else None
+                event = self._emit(
+                    event_type="rule_mutation",
+                    rule_name=rule.name,
+                    column=col,
+                    payload={"summary": summary},
+                    run_id=run_id,
+                )
+                events.append(event)
 
         self.last_report = AuditReport(
             initial_shape=initial_shape,
             final_shape=_dataframe_shape(current_df),
-            mutations=mutations,
             execution_time_ms=(time.perf_counter() - start_time) * 1000,
-            drift_alerts=drift_alerts,
-            leakage_warnings=leakage_warnings,
-            consistency_warnings=consistency_warnings,
+            events=events,
         )
         return current_df
 

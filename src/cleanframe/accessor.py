@@ -20,12 +20,12 @@ class CleanFrameAccessor:
     def __init__(self, df: Any) -> None:
         self._df = df
 
-    def audit(self) -> CleaningPlan:
-        return DataCleaner().fit(self._df)
+    def audit(self, target_col: str | None = None) -> CleaningPlan:
+        return DataCleaner().fit(self._df, target_col=target_col)
 
-    def clean(self) -> Any:
+    def clean(self, target_col: str | None = None) -> Any:
         cleaner = DataCleaner()
-        clean_df = cleaner.fit_transform(self._df)
+        clean_df = cleaner.fit_transform(self._df, target_col=target_col)
         setattr(clean_df, _CF_REPORT_ATTR, cleaner.last_report)
         return clean_df
 

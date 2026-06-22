@@ -1,7 +1,28 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from .types import Decision
+
+
+@runtime_checkable
+class RuleProtocol(Protocol):
+    """
+    Protocol interface for data cleaning rules.
+    Allows duck-typing for external rules without inheriting from BaseRule.
+    """
+
+    @property
+    def name(self) -> str:
+        """Name of the rule (used in serialization and telemetry)."""
+        ...
+
+    def detect(self, df: Any, params: dict[str, Any]) -> list[Decision]:
+        """Analyze the dataset and return recommended cleaning decisions."""
+        ...
+
+    def transform(self, df: Any, decisions: list[Decision]) -> Any:
+        """Apply approved decisions to the dataset."""
+        ...
 
 
 class BaseRule(ABC):

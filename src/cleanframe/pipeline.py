@@ -4,8 +4,9 @@ from typing import Any
 
 import narwhals as nw
 
-from .base import BaseRule
+from .base import RuleProtocol
 from .plan import CleaningPlan
+from .registry import discover_plugins
 from .rules import (
     CardinalityChecker,
     DuplicateHandler,
@@ -25,7 +26,7 @@ _BUILTIN_RULES = frozenset({
     "KNNImputationRule",
 })
 
-_DEFAULT_RULES: list[BaseRule] = [
+_DEFAULT_RULES: list[RuleProtocol] = [
     SchemaCaster(),
     DuplicateHandler(),
     NullHandler(),
@@ -70,19 +71,25 @@ def _decision_summary(decision: Decision) -> str:
 def _decisions_for_rule(
     decisions: list[Decision],
     rule_name: str,
+    rule_alt_name: str | None = None,
 ) -> list[Decision]:
+    names = {rule_name}
+    if rule_alt_name:
+        names.add(rule_alt_name)
     return [
         d
         for d in decisions
-        if getattr(d, "rule_name", "") == rule_name
-        or getattr(d, "rule", "") == rule_name
+        if getattr(d, "rule_name", "") in names
+        or getattr(d, "rule", "") in names
     ]
 
 
-def _mutation_entries(rule: BaseRule, decisions: list[Decision]) -> list[str]:
+def _mutation_entries(rule: RuleProtocol, decisions: list[Decision]) -> list[str]:
     if type(rule).__name__ in _BUILTIN_RULES:
         return [_decision_summary(d) for d in decisions]
-    return [rule.explain(decisions)]
+    if hasattr(rule, "explain") and callable(getattr(rule, "explain")):
+        return [rule.explain(decisions)]  # type: ignore[attr-defined]
+    return [_decision_summary(d) for d in decisions]
 
 
 def _compute_dataframe_stats(df: Any) -> dict[str, dict[str, float]]:
@@ -137,10 +144,11 @@ class DataCleaner:
 
     def __init__(
         self,
-        rules: list[BaseRule] | None = None,
+        rules: list[RuleProtocol] | None = None,
         impute_strategy: str = "median",
     ) -> None:
         self.impute_strategy = impute_strategy
+        self.rules: list[RuleProtocol] = []
         if rules is not None:
             self.rules = list(rules)
         else:
@@ -156,12 +164,13 @@ class DataCleaner:
                 ]
             else:
                 self.rules = list(_DEFAULT_RULES)
+            self.rules.extend(discover_plugins())
         self.last_report: AuditReport | None = None
 
-    def register_rule(self, rule: BaseRule) -> None:
+    def register_rule(self, rule: RuleProtocol) -> None:
         """Append a custom rule to the active execution registry."""
-        if not isinstance(rule, BaseRule):
-            raise TypeError("Registered rule must inherit from BaseRule")
+        if not isinstance(rule, RuleProtocol):
+            raise TypeError("Registered rule must implement RuleProtocol")
         self.rules.append(rule)
 
     def fit(
@@ -318,7 +327,7 @@ class DataCleaner:
         current_df = df
         for rule in self.rules:
             rule_name = type(rule).__name__
-            rule_decisions = _decisions_for_rule(approved, rule_name)
+            rule_decisions = _decisions_for_rule(approved, rule_name, getattr(rule, "name", None))
             if not rule_decisions:
                 continue
 

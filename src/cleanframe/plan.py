@@ -17,6 +17,7 @@ class CleaningPlan:
 
     decisions: list[Decision]
     baseline_stats: dict[str, dict[str, float]] = field(default_factory=dict)
+    leakage_warnings: list[str] = field(default_factory=list)
 
     def approve_all(self) -> None:
         """
@@ -71,6 +72,7 @@ class CleaningPlan:
             "version": "1.0",
             "decisions": [d.to_dict() for d in self.decisions],
             "baseline_stats": self.baseline_stats,
+            "leakage_warnings": self.leakage_warnings,
         }
         with path.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -92,5 +94,6 @@ class CleaningPlan:
         decisions_data = data.get("decisions", [])
         decisions = [Decision.from_dict(d) for d in decisions_data]
         baseline_stats = data.get("baseline_stats", {})
-        return cls(decisions, baseline_stats)
+        leakage_warnings = data.get("leakage_warnings", [])
+        return cls(decisions, baseline_stats, leakage_warnings)
 

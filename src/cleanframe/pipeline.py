@@ -3,11 +3,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import narwhals as nw
 
 from .base import RuleProtocol
+from .backends.base import BackendProtocol
 from .plan import CleaningPlan
 from .registry import discover_plugins
 from .rules import (
@@ -152,11 +153,13 @@ class DataCleaner:
         rules: list[RuleProtocol] | None = None,
         impute_strategy: str = "median",
         sinks: list[TelemetrySink] | None = None,
+        backend: BackendProtocol | None = None,
     ) -> None:
         self.impute_strategy = impute_strategy
         self.sinks: list[TelemetrySink] = list(sinks) if sinks is not None else []
         self.rules: list[RuleProtocol] = []
         self.config_params: dict[str, dict[str, Any]] = {}
+        self.backend = backend
         if rules is not None:
             self.rules = list(rules)
         else:
@@ -228,13 +231,27 @@ class DataCleaner:
             if "numeric_strategy" not in params_map["NullHandler"]:
                 params_map["NullHandler"]["numeric_strategy"] = "none"
 
+        if isinstance(df, (str, Path)):
+            if self.backend is None:
+                from .backends.duckdb_backend import DuckDBBackend
+                self.backend = DuckDBBackend()
+            assert self.backend is not None
+            path_input = cast(Any, df)
+            baseline_stats_override = self.backend.compute_statistics(path_input)
+            df = self.backend.sample_to_dataframe(path_input, k=10000)
+        else:
+            baseline_stats_override = None
+
         ndf = nw.from_native(df)  # type: ignore[call-overload]
         if target_col is not None:
             assert target_col in ndf.columns, f"Target column '{target_col}' not found in dataset"
 
         from .profiling.reservoir import sample_reservoir
         df_for_stats = sample_reservoir(df, k=10000)
-        baseline_stats = _compute_dataframe_stats(df_for_stats)
+        if baseline_stats_override is not None:
+            baseline_stats = baseline_stats_override
+        else:
+            baseline_stats = _compute_dataframe_stats(df_for_stats)
         decisions: list[Decision] = []
         for rule in self.rules:
             rule_name = type(rule).__name__
@@ -295,9 +312,34 @@ class DataCleaner:
 
         return CleaningPlan(decisions, baseline_stats, leakage_warnings)
 
-    def transform(self, df: FrameT, plan: CleaningPlan[FrameT]) -> FrameT:
+    def transform(
+        self,
+        df: FrameT,
+        plan: CleaningPlan[FrameT],
+        output_path: str | Path | None = None,
+    ) -> Any:
         start_time = time.perf_counter()
-        initial_shape = _dataframe_shape(df)
+        is_path = isinstance(df, (str, Path))
+
+        if is_path:
+            if self.backend is None:
+                from .backends.duckdb_backend import DuckDBBackend
+                self.backend = DuckDBBackend()
+            assert self.backend is not None
+            path_input = cast(Any, df)
+            if output_path is None:
+                p = Path(path_input)
+                output_path = p.parent / f"{p.stem}_cleaned{p.suffix}"
+            schema = self.backend.read_schema(path_input)
+            backend_any = cast(Any, self.backend)
+            conn = backend_any.get_connection()
+            path_str = str(Path(path_input).as_posix())
+            res_count = conn.execute(f"SELECT COUNT(*) FROM '{path_str}'").fetchone()
+            row_count = res_count[0] if res_count is not None else 0
+            initial_shape = (row_count, len(schema))
+        else:
+            initial_shape = _dataframe_shape(df)
+
         mutations: dict[str, list[str]] = {}
         run_id = str(uuid.uuid4())
         events: list[TelemetryEvent] = []
@@ -338,9 +380,15 @@ class DataCleaner:
 
         # Check for distribution drift
         if plan.baseline_stats:
-            from .profiling.reservoir import sample_reservoir
-            df_for_stats = sample_reservoir(df, k=10000)
-            current_stats = _compute_dataframe_stats(df_for_stats)
+            if is_path:
+                assert self.backend is not None
+                path_input = cast(Any, df)
+                current_stats = self.backend.compute_statistics(path_input)
+            else:
+                from .profiling.reservoir import sample_reservoir
+                df_for_stats = sample_reservoir(df, k=10000)
+                current_stats = _compute_dataframe_stats(df_for_stats)
+
             for col, base_col_stats in plan.baseline_stats.items():
                 if col not in current_stats:
                     msg = f"Column '{col}' is missing in the incoming data"
@@ -413,6 +461,59 @@ class DataCleaner:
                         events.append(event)
 
         approved = [d for d in plan.decisions if d.approved]
+
+        if is_path:
+            assert output_path is not None
+            assert self.backend is not None
+            path_input = cast(Any, df)
+            if not approved:
+                self.backend.execute_transform(path_input, output_path, plan)
+                self.last_report = AuditReport(
+                    initial_shape=initial_shape,
+                    final_shape=initial_shape,
+                    execution_time_ms=(time.perf_counter() - start_time) * 1000,
+                    events=events,
+                )
+                return output_path
+
+            self.backend.execute_transform(path_input, output_path, plan)
+            out_schema = self.backend.read_schema(output_path)
+            out_path_str = str(Path(output_path).as_posix())
+            backend_any = cast(Any, self.backend)
+            conn_any = backend_any.get_connection()
+            res_out_count = conn_any.execute(f"SELECT COUNT(*) FROM '{out_path_str}'").fetchone()
+            out_row_count = res_out_count[0] if res_out_count is not None else 0
+            final_shape = (out_row_count, len(out_schema))
+
+            # Emit rule mutations
+            for rule in self.rules:
+                rule_name = type(rule).__name__
+                rule_decisions = _decisions_for_rule(approved, rule_name, getattr(rule, "name", None))
+                if not rule_decisions:
+                    continue
+
+                summaries = _mutation_entries(rule, rule_decisions)
+                mutations[rule.name] = summaries
+                for summary in summaries:
+                    col = rule_decisions[0].column if rule_decisions else None
+                    event = self._emit(
+                        event_type="rule_mutation",
+                        rule_name=rule.name,
+                        column=col,
+                        payload={"summary": summary},
+                        run_id=run_id,
+                    )
+                    events.append(event)
+
+            self.last_report = AuditReport(
+                initial_shape=initial_shape,
+                final_shape=final_shape,
+                execution_time_ms=(time.perf_counter() - start_time) * 1000,
+                events=events,
+            )
+            return output_path
+
+        # In-memory execution
         if not approved:
             self.last_report = AuditReport(
                 initial_shape=initial_shape,
@@ -452,10 +553,17 @@ class DataCleaner:
         )
         return current_df
 
-    def fit_transform(self, df: FrameT, target_col: str | None = None) -> FrameT:
+    def fit_transform(
+        self,
+        df: FrameT,
+        target_col: str | None = None,
+        output_path: str | Path | None = None,
+    ) -> Any:
         plan = self.fit(df, target_col=target_col)
         for decision in plan.decisions:
             decision.approved = True
+        if isinstance(df, (str, Path)):
+            return self.transform(df, plan, output_path=output_path)
         return self.transform(df, plan)
 
     @classmethod

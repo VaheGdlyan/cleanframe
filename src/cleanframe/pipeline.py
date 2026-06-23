@@ -496,11 +496,20 @@ class DataCleaner:
                 mutations[rule.name] = summaries
                 for summary in summaries:
                     col = rule_decisions[0].column if rule_decisions else None
+                    payload = {"summary": summary}
+                    if rule_name == "CrossColumnConsistencyRule":
+                        dropped_count = sum(
+                            d.parameters.get("violation_count", 0)
+                            for d in rule_decisions
+                            if d.parameters.get("constraint_action") == "drop"
+                        )
+                        if dropped_count > 0:
+                            payload["dropped_rows"] = dropped_count
                     event = self._emit(
                         event_type="rule_mutation",
                         rule_name=rule.name,
                         column=col,
-                        payload={"summary": summary},
+                        payload=payload,
                         run_id=run_id,
                     )
                     events.append(event)
@@ -536,11 +545,20 @@ class DataCleaner:
 
             for summary in summaries:
                 col = rule_decisions[0].column if rule_decisions else None
+                payload = {"summary": summary}
+                if rule_name == "CrossColumnConsistencyRule":
+                    dropped_count = sum(
+                        d.parameters.get("violation_count", 0)
+                        for d in rule_decisions
+                        if d.parameters.get("constraint_action") == "drop"
+                    )
+                    if dropped_count > 0:
+                        payload["dropped_rows"] = dropped_count
                 event = self._emit(
                     event_type="rule_mutation",
                     rule_name=rule.name,
                     column=col,
-                    payload={"summary": summary},
+                    payload=payload,
                     run_id=run_id,
                 )
                 events.append(event)

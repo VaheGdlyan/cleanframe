@@ -167,15 +167,33 @@ class KNNImputationRule(BaseRule):
                     continue
                 
                 col_vals = ndf[col].to_list()
+                orig_dtype = ndf[col].dtype
+                
+                # Determine if original dtype is an integer type
+                is_int = (
+                    orig_dtype in (
+                        nw.Int64, nw.Int32, nw.Int16, nw.Int8,
+                        nw.UInt64, nw.UInt32, nw.UInt16, nw.UInt8
+                    ) or any(
+                        isinstance(orig_dtype, t) for t in (
+                            nw.Int64, nw.Int32, nw.Int16, nw.Int8,
+                            nw.UInt64, nw.UInt32, nw.UInt16, nw.UInt8
+                        )
+                    ) or str(orig_dtype).startswith(("Int", "UInt"))
+                )
+                
                 for idx_str, val in imputed_values.items():
                     idx = int(idx_str)
-                    col_vals[idx] = val
+                    if is_int and val is not None:
+                        col_vals[idx] = int(round(val))
+                    else:
+                        col_vals[idx] = val
                 
                 native_df = ndf.to_native()
                 pkg_name = type(native_df).__module__.split('.')[0]
                 backend = sys.modules[pkg_name]
                 
-                new_s = nw.new_series(col, col_vals, backend=backend)
+                new_s = nw.new_series(col, col_vals, dtype=orig_dtype, backend=backend)
                 ndf = ndf.with_columns(new_s)
                 
             elif action == "median_fallback":

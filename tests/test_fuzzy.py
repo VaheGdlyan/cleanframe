@@ -56,3 +56,35 @@ def test_fuzzy_unification_explain():
     explanation = rule.explain(decisions)
     assert "Fuzzy unification applied" in explanation
     assert "unified" in explanation
+
+
+def test_fuzzy_unification_exclude_cols():
+    df = pd.DataFrame({
+        "city": ["New York", "New York ", "New York City"],
+        "name": ["Jon Doe", "Jon Doe ", "Jane Smith"]
+    })
+    # Exclude "name" column from fuzzy matching
+    rule = FuzzyUnificationRule(threshold=80.0, exclude_cols=["name"])
+    decisions = rule.detect(df, {})
+    assert len(decisions) == 1
+    assert decisions[0].column == "city"
+
+
+def test_fuzzy_unification_pre_lowercase():
+    df = pd.DataFrame({
+        "role": ["Manager", "manager", "MANAGER", "Employee"]
+    })
+    # Threshold 85.0. Case-sensitive matching fails for Manager vs MANAGER,
+    # but pre_lowercase=True should successfully unify them.
+    rule = FuzzyUnificationRule(threshold=85.0, pre_lowercase=True)
+    decisions = rule.detect(df, {})
+    
+    assert len(decisions) == 1
+    d = decisions[0]
+    assert d.column == "role"
+    mapping = d.parameters["mapping"]
+    
+    # Canonical value should be "Manager" (first seen)
+    assert mapping["manager"] == "Manager"
+    assert mapping["MANAGER"] == "Manager"
+

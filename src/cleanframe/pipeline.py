@@ -232,7 +232,9 @@ class DataCleaner:
         if target_col is not None:
             assert target_col in ndf.columns, f"Target column '{target_col}' not found in dataset"
 
-        baseline_stats = _compute_dataframe_stats(df)
+        from .profiling.reservoir import sample_reservoir
+        df_for_stats = sample_reservoir(df, k=10000)
+        baseline_stats = _compute_dataframe_stats(df_for_stats)
         decisions: list[Decision] = []
         for rule in self.rules:
             rule_name = type(rule).__name__
@@ -336,7 +338,9 @@ class DataCleaner:
 
         # Check for distribution drift
         if plan.baseline_stats:
-            current_stats = _compute_dataframe_stats(df)
+            from .profiling.reservoir import sample_reservoir
+            df_for_stats = sample_reservoir(df, k=10000)
+            current_stats = _compute_dataframe_stats(df_for_stats)
             for col, base_col_stats in plan.baseline_stats.items():
                 if col not in current_stats:
                     msg = f"Column '{col}' is missing in the incoming data"

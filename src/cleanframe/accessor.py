@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Generic, TypeVar
 
 from .pipeline import DataCleaner
 from .plan import CleaningPlan
@@ -6,8 +6,10 @@ from .telemetry import AuditReport
 
 _CF_REPORT_ATTR = "_cf_report"
 
+FrameT = TypeVar("FrameT")
 
-class CleanFrameAccessor:
+
+class CleanFrameAccessor(Generic[FrameT]):
     """
     Namespace accessor for CleanFrame on pandas and polars DataFrames.
 
@@ -17,13 +19,13 @@ class CleanFrameAccessor:
         df.cf.report()  # Prints the audit report from the last clean() call
     """
 
-    def __init__(self, df: Any) -> None:
+    def __init__(self, df: FrameT) -> None:
         self._df = df
 
-    def audit(self, target_col: str | None = None) -> CleaningPlan:
+    def audit(self, target_col: str | None = None) -> CleaningPlan[FrameT]:
         return DataCleaner().fit(self._df, target_col=target_col)
 
-    def clean(self, target_col: str | None = None) -> Any:
+    def clean(self, target_col: str | None = None) -> FrameT:
         cleaner = DataCleaner()
         clean_df = cleaner.fit_transform(self._df, target_col=target_col)
         setattr(clean_df, _CF_REPORT_ATTR, cleaner.last_report)

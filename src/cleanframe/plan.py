@@ -1,13 +1,15 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from .types import Decision
 
+FrameT = TypeVar("FrameT")
+
 
 @dataclass
-class CleaningPlan:
+class CleaningPlan(Generic[FrameT]):
     """
     Represents a plan comprising a set of data cleaning decisions.
 

@@ -1,11 +1,12 @@
 import math
 import time
-from typing import Any
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, TypeVar
 
 import narwhals as nw
 
-import uuid
-from datetime import datetime, timezone
 from .base import RuleProtocol
 from .plan import CleaningPlan
 from .registry import discover_plugins
@@ -18,6 +19,8 @@ from .rules import (
 )
 from .telemetry import AuditReport, TelemetryEvent, TelemetrySink
 from .types import Decision
+
+FrameT = TypeVar("FrameT")
 
 _BUILTIN_RULES = frozenset({
     "SchemaCaster",
@@ -143,6 +146,7 @@ class DataCleaner:
     Default rule sequence:
     SchemaCaster → DuplicateHandler → NullHandler → OutlierHandler → CardinalityChecker
     """
+
     def __init__(
         self,
         rules: list[RuleProtocol] | None = None,
@@ -152,6 +156,7 @@ class DataCleaner:
         self.impute_strategy = impute_strategy
         self.sinks: list[TelemetrySink] = list(sinks) if sinks is not None else []
         self.rules: list[RuleProtocol] = []
+        self.config_params: dict[str, dict[str, Any]] = {}
         if rules is not None:
             self.rules = list(rules)
         else:
@@ -189,6 +194,7 @@ class DataCleaner:
         for sink in self.sinks:
             sink.emit(event)
         return event
+
     def register_rule(self, rule: RuleProtocol) -> None:
         """Append a custom rule to the active execution registry."""
         if not isinstance(rule, RuleProtocol):
@@ -197,10 +203,10 @@ class DataCleaner:
 
     def fit(
         self,
-        df: Any,
+        df: FrameT,
         params_map: dict[str, dict[str, Any]] | None = None,
         target_col: str | None = None,
-    ) -> CleaningPlan:
+    ) -> CleaningPlan[FrameT]:
         """
         Run each rule's detect method and aggregate the resulting decisions.
 
@@ -222,7 +228,7 @@ class DataCleaner:
             if "numeric_strategy" not in params_map["NullHandler"]:
                 params_map["NullHandler"]["numeric_strategy"] = "none"
 
-        ndf = nw.from_native(df)
+        ndf = nw.from_native(df)  # type: ignore[call-overload]
         if target_col is not None:
             assert target_col in ndf.columns, f"Target column '{target_col}' not found in dataset"
 
@@ -230,7 +236,9 @@ class DataCleaner:
         decisions: list[Decision] = []
         for rule in self.rules:
             rule_name = type(rule).__name__
-            params = params_map.get(rule_name, {}) if params_map else {}
+            params = dict(self.config_params.get(rule_name, {}))
+            if params_map and rule_name in params_map:
+                params.update(params_map[rule_name])
             detected = rule.detect(df, params)
             if not isinstance(detected, list) or not all(
                 isinstance(d, Decision) for d in detected
@@ -285,7 +293,7 @@ class DataCleaner:
 
         return CleaningPlan(decisions, baseline_stats, leakage_warnings)
 
-    def transform(self, df: Any, plan: CleaningPlan) -> Any:
+    def transform(self, df: FrameT, plan: CleaningPlan[FrameT]) -> FrameT:
         start_time = time.perf_counter()
         initial_shape = _dataframe_shape(df)
         mutations: dict[str, list[str]] = {}
@@ -440,8 +448,58 @@ class DataCleaner:
         )
         return current_df
 
-    def fit_transform(self, df: Any, target_col: str | None = None) -> Any:
+    def fit_transform(self, df: FrameT, target_col: str | None = None) -> FrameT:
         plan = self.fit(df, target_col=target_col)
         for decision in plan.decisions:
             decision.approved = True
         return self.transform(df, plan)
+
+    @classmethod
+    def from_config(cls, filepath: str | Path) -> "DataCleaner":
+        """
+        Load and configure DataCleaner from a TOML file.
+
+        Args:
+            filepath: Path to the TOML configuration file.
+
+        Returns:
+            A configured DataCleaner instance.
+        """
+        import tomllib
+        from pathlib import Path
+        import inspect
+
+        path = Path(filepath)
+        with path.open("rb") as f:
+            config = tomllib.load(f)
+
+        cleaner_config = config.get("cleaner", {})
+        impute_strategy = cleaner_config.get("impute_strategy", "median")
+
+        cleaner = cls(impute_strategy=impute_strategy)
+
+        rules_config = config.get("rules", {})
+        new_rules = []
+        for rule in cleaner.rules:
+            rule_name = type(rule).__name__
+            if rule_name in rules_config:
+                rule_params = rules_config[rule_name]
+                rule_cls = type(rule)
+
+                try:
+                    sig = inspect.signature(rule_cls.__init__)
+                    valid_init_args = {}
+                    for k, v in rule_params.items():
+                        if k in sig.parameters:
+                            valid_init_args[k] = v
+                    new_rule = rule_cls(**valid_init_args)
+                except Exception:
+                    new_rule = rule_cls()
+
+                new_rules.append(new_rule)
+                cleaner.config_params[rule_name] = rule_params
+            else:
+                new_rules.append(rule)
+
+        cleaner.rules = new_rules
+        return cleaner
